@@ -1,0 +1,244 @@
+#include<stdlib.h>
+
+//Inicijalizacija za ESP8266-01 i ThingSpeak
+#define SSID "a294de"//ime mreze na koju se kacimo
+#define PASS "266813628"//password mreze
+#define IP "184.106.153.149" // thingspeak.com
+#define Baud_Rate 115200 //moze i 9600
+#define GREEN_LED 3 //optional LED's for debugging
+#define RED_LED 4 //optional LED's for debugging
+#define DELAY_TIME 60000 //time in ms between posting data to ThingSpeak
+//put za stranicu
+String GET = "GET /update?key=TXLNL9TXDVCYBIE1&field1=";
+String FIELD2 = "&field2=";
+
+//Ako zelimo za vise mjerenja
+//String FIELD3 = "&field3=";
+
+  
+bool updated;
+
+//Inicijalizacija za Photocell
+int photoRPin = 1;   //Biramo analogni in A1
+int minLight;          //Koristimo za kalibraciju ocitanja
+int maxLight;          //Koristimo za kalibraciju ocitanja
+int lightLevel;
+int adjustedLightLevel;
+
+//Inicijalizacija za senzor LM35
+float tempC;
+int reading;
+int tempPin = 0;
+//Povezemo pin 1 (sa lijeve strane) senzora na +5V
+//Povezemo pin 2 senzora na izlaz LM35
+//Povezemo pin 3 (sa desne strane ) na GND
+
+//Inicijalizacija za senzora DHT11
+#include "DHT.h" //Ukljucimo biblioteku DHT.h
+#define DHTPIN 2     // Definisemo digitalni pin 2
+#define DHTTYPE DHT11   // DHT 11 koristimo senzor
+DHT dht(DHTPIN, DHTTYPE);
+// Povezemo pin 1 (sa lijeve strane) senzora na +5V
+// Povezemo pin 2 senzora gdje je izlaz DHTPIN
+// Povezemo pin 3 (sa desne strane) senzora na  GROUND
+// Povezemo 10K otpornik od pina 2 (data) na pin 1 (+5) senzora
+
+
+
+void setup() {
+  
+  Serial.begin(Baud_Rate); 
+
+  
+  //najprije cemo pokrenuti ESP8266-01 modul i pokusati se konektovati na mrezu
+  Serial.println("AT");
+  
+  delay(5000);
+  
+  if(Serial.find("OK")){
+    Serial.println("After AT , we found OK");
+    //connect to your wifi netowork
+    bool connected = connectWiFi();
+    if(!connected){
+      Serial.println("We couldn't connect");
+      //failure, need to check your values and try again
+      Error();
+    }
+  }else{
+    Serial.println("AT doesn't work");
+    Error();
+  }
+  
+
+ //Pokreni Photocell
+ lightLevel=analogRead(photoRPin); //pocetni nivo svjetlosti
+ minLight=lightLevel-20;
+ maxLight=lightLevel;
+
+  //Pokreni LM35
+  analogReference(INTERNAL); //LM35 je potpuno kompatibilan sa arduinom
+  
+ // pokreni DHT11
+  dht.begin();
+}
+
+void loop() {
+
+  
+  //Ocitanje senzora temperature i vlaznosti traje 250 millisekundi!
+  // Ocitanje senzora moze biti staro 1 sekundu (dosta je spor senzor)
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+  // provjerava da li smo dobili vrijednost, ako nismo NaN (ako nije broj) onda je greska!
+  if (isnan(t) || isnan(h)) {
+    Serial.println("Nismo uspjeli dobiti ocitanje DHT");
+  } else {
+    delay(1000);
+    Serial.println(" %\t");
+    Serial.print("Vlaznost ocitana sa DHT11: "); 
+    Serial.print(h);
+    Serial.println(" %\t");
+    
+    Serial.print("Temperatura ocitana sa DHT11: "); 
+    Serial.print(t);
+    Serial.println(" *C");
+  }
+
+  //ubacivanje na ThingSpeak sa novim vrijednostima
+    //update ThingSpeak channel with new values
+  updated = updateTemp(String(t), String(h));
+  
+  //if update succeeded light up green LED, else light up red LED
+  if(updated){
+    LightGreen();
+  }else{
+    LightRed();
+  }
+  
+  //wait for delay time before attempting to post again
+  delay(DELAY_TIME);
+
+  
+  //za LM35 ocitanje
+  reading = analogRead(tempPin);
+  tempC = reading / 9.31;
+  if( isnan(tempC) ){
+    Serial.println("Nismo uspjeli dobiti ocitanje LM35");
+  }else{
+  Serial.print("Temperatura ocitana sa LM35:  ");
+  Serial.print(tempC);
+  Serial.println(" *C");
+  }
+
+
+  //za Photocell ocitanje
+   //automatsko postavljanje minimuma i maximuma u realnom vremenu
+   lightLevel=analogRead(photoRPin);
+   if(minLight>lightLevel){
+   minLight=lightLevel;
+   }
+   if(maxLight<lightLevel){
+   maxLight=lightLevel;
+   }
+   //Podesavanje nivoa osvjetljenosti od 0 do 100
+    adjustedLightLevel = map(lightLevel, minLight, maxLight, 0, 100); 
+ 
+     //Salji podatke na ispis
+     Serial.print("Nivo osvjetljenosti sa Photocell: ");
+     Serial.print(adjustedLightLevel);
+     Serial.println(" %");
+    
+
+}
+bool updateTemp(String tenmpF, String humid){
+  //initialize your AT command string
+  String cmd = "AT+CIPSTART=\"TCP\",\"";
+  
+  //add IP address and port
+  cmd += IP;
+  cmd += "\",80";
+  
+  //connect
+  Serial.println(cmd);
+  delay(2000);
+  if(Serial.find("Error")){
+    Serial.println("Nismo dosli do ThingSpeak.com");
+    return false;
+  }
+  
+  //build GET command, ThingSpeak takes Post or Get commands for updates, I use a Get
+  cmd = GET;
+  cmd += tenmpF;
+  cmd += FIELD2;
+  cmd += humid;
+  
+  //continue to add data here if you have more fields such as a light sensor
+  //cmd += FIELD3;
+  //cmd += <field 3 value>
+  
+  cmd += "\r\n";
+  
+  //Use AT commands to send data
+  Serial.print("AT+CIPSEND=");
+  Serial.println(cmd.length());
+  if(Serial.find(">")){
+    //send through command to update values
+    Serial.print(cmd);
+  }else{
+    Serial.println("AT+CIPCLOSE");
+  }
+  
+  if(Serial.find("OK")){
+    //success! Your most recent values should be online.
+    Serial.println("Vrijednost je poslata na zeljenu stranicu");
+    return true;
+  }else{
+    Serial.println("Vrijednost NIJE je poslata na zeljenu stranicu");
+    return false;
+  }
+}
+boolean connectWiFi(){
+  //set ESP8266 mode with AT commands
+  Serial.println("AT+CWMODE=1");  //ovo je default mode za ruter, radi kao acces point
+  delay(2000);
+
+  //build connection command
+  String cmd="AT+CWJAP=\"";  //AT komanda za povezivanje na mrezu
+  cmd+=SSID;                 //naziv mreze
+  cmd+="\",\"";
+  cmd+=PASS;                 //password mreze
+  cmd+="\"";
+  
+  //connect to WiFi network and wait 5 seconds
+  Serial.println(cmd);
+  delay(5000);
+  
+  //if connected return true, else false
+  if(Serial.find("OK")){
+    Serial.println("We connected successfully to our network");
+    return true;
+  }else{
+    Serial.println("We couldn't connect to our network");
+    return false;
+  }
+}
+
+void LightGreen(){
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(GREEN_LED, HIGH);  
+}
+
+void LightRed(){
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, HIGH);
+}
+
+//if an error has occurred alternate green and red leds
+void Error(){      
+  while(true){      
+    LightRed();      
+    delay(2000);      
+    LightGreen();
+    delay(2000);
+  }
+}
